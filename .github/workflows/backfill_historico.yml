@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 env:
-  NOMBRE_RELEASE: datos-actuales
+  NOMBRE_RELEASE: datos_actuales_sicop
 
 jobs:
   backfill:
@@ -28,10 +28,10 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout del repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: "pip"
