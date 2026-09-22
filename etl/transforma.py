@@ -24,9 +24,23 @@ def listar_csv(mes: str) -> list[str]:
 
 def cargar_mes(mes: str) -> pd.DataFrame:
     archivos = listar_csv(mes)
+    print(f"Archivos para el mes {mes}: {archivos}", flush=True)
     if not archivos:
-        raise FileNotFoundError(f"No hay CSV para el mes {mes} en {CARPETA_RAW}/{mes}")
-    partes = [pd.read_csv(a, encoding="utf-8-sig", sep=";", engine="python") for a in archivos]
+        raise FileNotFoundError(
+            f"No hay CSV para el mes {mes} en {CARPETA_RAW}/{mes}"
+        )
+    partes = []
+    for a in archivos:
+        print(f"Procesando archivo: {a}", flush=True)
+        parte = pd.read_csv(
+            a,
+            encoding="utf-8-sig",
+            sep=";",
+            quotechar='"',
+            engine="python",
+            on_bad_lines="warn",
+        )
+        partes.append(parte)
     return pd.concat(partes, ignore_index=True)
 
 
