@@ -26,7 +26,7 @@ def cargar_mes(mes: str) -> pd.DataFrame:
     archivos = listar_csv(mes)
     if not archivos:
         raise FileNotFoundError(f"No hay CSV para el mes {mes} en {CARPETA_RAW}/{mes}")
-    partes = [pd.read_csv(a, encoding="latin-1", sep=None, engine="python") for a in archivos]
+    partes = [pd.read_csv(a, encoding="utf-8-sig", sep=";", engine="python") for a in archivos]
     return pd.concat(partes, ignore_index=True)
 
 
