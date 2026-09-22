@@ -1,0 +1,90 @@
+name: Actualización diaria SICOP
+
+on:
+  schedule:
+    - cron: "30 14 * * *"  # 08:30 hora de Costa Rica (UTC-6); el Observatorio publica a las 08:00
+  workflow_dispatch:
+    inputs:
+      forzar_reentrenamiento:
+        description: "Reentrenar el modelo aunque no sea lunes"
+        type: boolean
+        default: false
+
+# Evita que dos ejecuciones escriban el mismo sicop.duckdb al mismo tiempo.
+concurrency:
+  group: sicop-actualizacion-diaria
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # necesario para subir sicop.duckdb al Release
+  issues: write      # necesario para crear el issue de aviso si algo falla
+
+env:
+  NOMBRE_RELEASE: datos-actuales
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Restaurar sicop.duckdb desde el Release (si ya existe)
+        run: |
+          mkdir -p data
+          gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber \
+            || echo "No hay un Release previo todavía; se creará una base nueva."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar el mes vigente del Observatorio
+        run: python etl/descarga.py
+
+      - name: Transformar al modelo dimensional
+        run: python etl/transforma.py
+
+      - name: Cargar el mes vigente en DuckDB
+        run: python etl/carga_duckdb.py
+
+      - name: Reentrenar (lunes) o solo actualizar predicciones
+        run: |
+          if [ "${{ github.event.inputs.forzar_reentrenamiento }}" = "true" ]; then
+            python modelo/entrena_y_predice.py --forzar
+          else
+            python modelo/entrena_y_predice.py
+          fi
+
+      - name: Publicar sicop.duckdb actualizado en el Release
+        run: |
+          if gh release view "$NOMBRE_RELEASE" >/dev/null 2>&1; then
+            gh release upload "$NOMBRE_RELEASE" data/sicop.duckdb --clobber
+          else
+            gh release create "$NOMBRE_RELEASE" data/sicop.duckdb \
+              --title "Base de datos SICOP" \
+              --notes "Se actualiza automáticamente todos los días."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Crear issue si algo falló
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Falló la actualización diaria de SICOP - ${new Date().toISOString().slice(0, 10)}`,
+              body: `Revisa los logs de la ejecución: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ["etl", "automatico"]
+            })

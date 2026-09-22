@@ -1,0 +1,73 @@
+name: Backfill histórico SICOP (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mes_inicio:
+        description: "Primer mes a cargar (YYYYMM)"
+        default: "202501"
+        required: true
+      mes_fin:
+        description: "Último mes a cargar (YYYYMM); vacío = mes anterior al actual"
+        default: ""
+        required: false
+      reiniciar_base:
+        description: "Empezar sicop.duckdb desde cero en vez de continuar el existente"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  NOMBRE_RELEASE: datos-actuales
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Restaurar sicop.duckdb existente (si no se pidió reiniciar)
+        if: github.event.inputs.reiniciar_base != 'true'
+        run: |
+          mkdir -p data
+          gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber \
+            || echo "No hay un Release previo; se crea una base nueva."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar el rango histórico completo
+        run: |
+          python etl/descarga.py --backfill \
+            --inicio "${{ github.event.inputs.mes_inicio }}" \
+            --fin "${{ github.event.inputs.mes_fin }}"
+
+      - name: Transformar todos los meses descargados
+        run: python etl/transforma.py --backfill
+
+      - name: Cargar todo el histórico en DuckDB
+        run: python etl/carga_duckdb.py --backfill
+
+      - name: Publicar sicop.duckdb en el Release
+        run: |
+          if gh release view "$NOMBRE_RELEASE" >/dev/null 2>&1; then
+            gh release upload "$NOMBRE_RELEASE" data/sicop.duckdb --clobber
+          else
+            gh release create "$NOMBRE_RELEASE" data/sicop.duckdb \
+              --title "Base de datos SICOP" \
+              --notes "Carga histórica inicial."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
