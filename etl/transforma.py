@@ -64,7 +64,8 @@ def procesar_csv(ruta_csv: str, config: dict, mes: str) -> pd.DataFrame:
             salida[clave] = pd.NA
 
     resultado = pd.DataFrame(salida)
-    resultado["periodo"] = mes
+    resultado["periodo"] = mes #agrega la columna periodo para poder filtrar por mes en la capa final.
+    resultado = resultado.astype("string") #convierte a texto todas las columnas, para evitar problemas con escribir a parquet.
     return resultado
 
 
