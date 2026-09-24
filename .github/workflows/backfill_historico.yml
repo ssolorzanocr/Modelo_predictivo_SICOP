@@ -58,7 +58,10 @@ jobs:
         run: python etl/transforma.py --backfill
 
       - name: Cargar todo el histórico en DuckDB
-        run: python etl/carga_duckdb.py --backfill
+        run: python etl/carga_staging.py --backfill
+
+      - name: Reconstruir el esquema final
+        run: python etl/construir_modelo_final.py
 
       - name: Publicar sicop.duckdb en el Release
         run: |

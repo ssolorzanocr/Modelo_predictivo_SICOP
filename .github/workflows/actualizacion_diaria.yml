@@ -17,7 +17,7 @@ concurrency:
 
 permissions:
   contents: write   # necesario para subir sicop.duckdb al Release
-  issues: write      # necesario para crear el issue de aviso si algo falla
+  issues: write     # necesario para crear el issue de aviso si algo falla
 
 env:
   NOMBRE_RELEASE: datos-actuales
@@ -28,10 +28,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout del repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: "pip"
@@ -54,7 +54,10 @@ jobs:
         run: python etl/transforma.py
 
       - name: Cargar el mes vigente en DuckDB
-        run: python etl/carga_duckdb.py
+        run: python etl/carga_staging.py
+
+      - name: Reconstruir el esquema final
+        run: python etl/construir_modelo_final.py
 
       - name: Reentrenar (lunes) o solo actualizar predicciones
         run: |

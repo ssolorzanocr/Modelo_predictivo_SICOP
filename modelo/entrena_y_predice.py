@@ -6,11 +6,9 @@ Por defecto solo genera predicciones con el último modelo guardado -- eso
 mantiene el job diario liviano. Reentrena desde cero los lunes, o si se pasa
 --forzar (útil tras un backfill o un cambio en el modelo).
 
-NOTA sobre las llaves: fact_ofertas usa nro_oferta_nro_linea, mientras que
-fact_carteles y fact_adjudicaciones usan nro_sicop_nro_linea. Aquí se deriva
-nro_linea asumiendo que nro_oferta_nro_linea tiene el formato
-"{nro_oferta}-{nro_linea}" -- confírmalo contra datos reales y ajusta el
-separador de split_part si hace falta.
+Con el esquema final, fact_lineas_ofertas y fact_lineas_adjudicadas ya
+comparten columnas limpias (nro_sicop, nro_linea, nro_oferta,
+cedula_proveedor) -- no hace falta derivar nada a mano.
 """
 import argparse
 from datetime import datetime
@@ -33,21 +31,18 @@ COLUMNAS_NUMERICAS = ["cantidad_ofertada", "precio_unitario_ofertado", "tipo_cam
 CONSULTA_ENTRENAMIENTO = """
     SELECT
         o.*,
-        (a.nro_sicop_nro_linea IS NOT NULL) AS fue_adjudicado
-    FROM (
-        SELECT *,
-            nro_sicop || '-' || split_part(nro_oferta_nro_linea, '-', 2) AS nro_sicop_nro_linea
-        FROM fact_ofertas
-    ) o
-    LEFT JOIN fact_adjudicaciones a
-        USING (nro_sicop_nro_linea, cedula_proveedor)
+        (a.nro_oferta IS NOT NULL) AS fue_adjudicado
+    FROM final.fact_lineas_ofertas o
+    LEFT JOIN final.fact_lineas_adjudicadas a
+        USING (nro_sicop, nro_linea, nro_oferta, cedula_proveedor)
 """
 
 CONSULTA_PENDIENTES = """
     SELECT o.*
-    FROM fact_ofertas o
-    INNER JOIN fact_carteles c
-        ON c.nro_sicop_nro_linea = o.nro_sicop || '-' || split_part(o.nro_oferta_nro_linea, '-', 2)
+    FROM final.fact_lineas_ofertas o
+    JOIN final.fact_lineas_carteles c
+        ON c.nro_sicop = o.nro_sicop AND c.numero_linea = o.nro_linea
+    WHERE c.adjudicada = false
 """
 
 
@@ -90,9 +85,9 @@ def predecir(con) -> None:
         return
     X = pendientes[COLUMNAS_CATEGORICAS + COLUMNAS_NUMERICAS]
     pendientes["probabilidad_adjudicacion"] = pipeline.predict_proba(X)[:, 1]
-    resultado = pendientes[["nro_oferta_nro_linea", "cedula_proveedor", "probabilidad_adjudicacion"]]
-    con.execute("CREATE OR REPLACE TABLE predicciones_adjudicacion AS SELECT * FROM resultado")
-    print(f"{len(resultado)} predicciones guardadas en predicciones_adjudicacion")
+    resultado = pendientes[["nro_sicop", "nro_linea", "nro_oferta", "cedula_proveedor", "probabilidad_adjudicacion"]]
+    con.execute("CREATE OR REPLACE TABLE final.predicciones_adjudicacion AS SELECT * FROM resultado")
+    print(f"{len(resultado)} predicciones guardadas en final.predicciones_adjudicacion")
 
 
 if __name__ == "__main__":

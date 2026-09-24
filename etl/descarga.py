@@ -72,9 +72,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.backfill:
+        #Modo --backfill.
         meses = rango_meses(args.inicio, args.fin)
         print(f"Backfill de {len(meses)} meses: {meses[0]} a {meses[-1]}")
         for m in meses:
             descargar_mes(m)
     else:
+        #Modo normal (sin argumentos): descarga solo el mes vigente.
         descargar_mes(mes_actual_costa_rica())

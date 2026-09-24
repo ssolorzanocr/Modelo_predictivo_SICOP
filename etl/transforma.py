@@ -1,144 +1,95 @@
-"""Transforma los CSV crudos del Observatorio a las 6 tablas del modelo de datos:
-fact_ofertas, fact_adjudicaciones, fact_carteles, dim_proveedores,
-dim_instituciones y dim_productos.
+"""Convierte cada CSV crudo del Observatorio en su tabla de staging (1:1),
+según CSV_CONFIG. Esta capa NO tipa ni calcula nada -- solo selecciona y
+renombra columnas, dejando todo como texto (VARCHAR). El tipado y los
+cálculos pasan a construir_modelo_final.py, que sí conoce los tipos reales.
 
-IMPORTANTE: los nombres de columna de los CSV originales del Observatorio no
-están confirmados en este esqueleto -- todo lo marcado con TODO depende de
-que abras un ZIP real y verifiques los nombres exactos y el filtro que
-distingue cartel/oferta/adjudicación. La lógica de selección de columnas,
-cálculo de montos, orden de columnas y deduplicación sí es funcional.
+Dos problemas que resuelve este diseño:
+1. Problema 1: Los headers de un mismo CSV cambian de nombre/mayúsculas entre años
+   (p. ej. "TAMAÑO_PROVEEDOR" un año, "Tamano_Proveedor" otro). Se resuelve
+   comparando nombres normalizados (minúsculas, sin tildes) en vez de una
+   igualdad exacta.
+2. Problema 2: El ZIP trae más archivos de los que se necesitan para contruir el modelo.
+   Solo se procesan los que están listados en CSV_CONFIG; el resto se reporta y se ignora.
+   Esto reduce la cantidad de datos que se cargan en staging y evita errores por CSV inesperados.
+
+Si una columna configurada no aparece en el CSV de un mes en particular
+(cambió de nombre o se dejó de publicar), la columna se llena con NULL y se
+imprime un aviso -- no se detiene la carga de todo el mes.
 """
 import argparse
 import glob
 import os
+import unicodedata
 
 import pandas as pd
 
+from csv_config import CSV_CONFIG #archivo con detalles de los csv que se van a procesar.
+
 CARPETA_RAW = "data/raw"
-CARPETA_PROCESADO = "data/procesado"
+CARPETA_STAGING = "data/staging"
 
 
-def listar_csv(mes: str) -> list[str]:
-    return glob.glob(os.path.join(CARPETA_RAW, mes, "*.csv"))
+def normalizar(texto: str) -> str:
+    """minúsculas, sin tildes/ñ, sin espacios en los extremos -- para poder
+    comparar nombres de columna o de archivo que cambian de formato entre años."""
+    texto = texto.strip().lower()
+    texto = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in texto if not unicodedata.combining(c))
 
 
-def cargar_mes(mes: str) -> pd.DataFrame:
-    archivos = listar_csv(mes)
-    print(f"Archivos para el mes {mes}: {archivos}", flush=True)
-    if not archivos:
-        raise FileNotFoundError(
-            f"No hay CSV para el mes {mes} en {CARPETA_RAW}/{mes}"
-        )
-    partes = []
-    for a in archivos:
-        print(f"Procesando archivo: {a}", flush=True)
-        parte = pd.read_csv(
-            a,
+CONFIG_POR_ARCHIVO = {normalizar(nombre): (nombre, cfg) for nombre, cfg in CSV_CONFIG.items()}
+
+
+def procesar_csv(ruta_csv: str, config: dict, mes: str) -> pd.DataFrame:
+    # dtype=str: todo se lee como texto para no pelear con formatos de
+    # fecha/número que cambian entre años -- eso se resuelve en la capa final.
+    df = pd.read_csv(
+            ruta_csv,
             encoding="utf-8-sig",
             sep=";",
             quotechar='"',
             engine="python",
             on_bad_lines="warn",
         )
-        partes.append(parte)
-    return pd.concat(partes, ignore_index=True)
+    columnas_disponibles = {normalizar(c): c for c in df.columns}
 
+    salida = {}
+    for columna_esperada in config["columnas"]:
+        clave = normalizar(columna_esperada)
+        columna_real = columnas_disponibles.get(clave)
+        if columna_real is not None:
+            salida[clave] = df[columna_real].values
+        else:
+            print(f"  aviso [{mes}] falta la columna '{columna_esperada}' en {os.path.basename(ruta_csv)}")
+            salida[clave] = pd.NA
 
-# --- Dimensiones -------------------------------------------------------------
-
-def construir_dim_proveedores(df: pd.DataFrame) -> pd.DataFrame:
-    # TODO: confirmar nombres reales de columna de origen
-    return df[["cedula_proveedor", "nombre_proveedor", "tipo_proveedor"]].drop_duplicates(
-        subset="cedula_proveedor"
-    )
-
-
-def construir_dim_instituciones(df: pd.DataFrame) -> pd.DataFrame:
-    return df[["cedula_institucion", "nombre_institucion"]].drop_duplicates(
-        subset="cedula_institucion"
-    )
-
-
-def construir_dim_productos(df: pd.DataFrame) -> pd.DataFrame:
-    return df[["cod_producto", "descripcion_producto", "segmento", "nombre_segmento"]].drop_duplicates(
-        subset="cod_producto"
-    )
-
-
-# --- Hechos --------------------------------------------------------------------
-
-def construir_fact_ofertas(df: pd.DataFrame, mes: str) -> pd.DataFrame:
-    # TODO: ajustar el filtro que identifica las filas de tipo "oferta" en el CSV real
-    ofertas = df[df["tipo_registro"] == "OFERTA"].copy()
-    out = ofertas[[
-        "nro_oferta_nro_linea", "cod_producto", "nro_sicop", "cedula_proveedor",
-        "cantidad_ofertada", "precio_unitario_ofertado", "tipo_moneda",
-        "tipo_cambio_crc", "tipo_oferta", "fecha_oferta",
-    ]].copy()
-    out["monto_linea"] = out["cantidad_ofertada"] * out["precio_unitario_ofertado"]
-    out["fecha_oferta"] = pd.to_datetime(out["fecha_oferta"], errors="coerce").dt.date
-    out["periodo"] = mes
-    # Reordenar para que coincida exactamente con esquema.sql (el INSERT es posicional)
-    return out[[
-        "nro_oferta_nro_linea", "cod_producto", "nro_sicop", "cedula_proveedor",
-        "cantidad_ofertada", "precio_unitario_ofertado", "tipo_moneda",
-        "tipo_cambio_crc", "monto_linea", "tipo_oferta", "fecha_oferta", "periodo",
-    ]]
-
-
-def construir_fact_adjudicaciones(df: pd.DataFrame, mes: str) -> pd.DataFrame:
-    # TODO: ajustar el filtro que identifica las filas de tipo "adjudicación" en el CSV real
-    adjudicaciones = df[df["tipo_registro"] == "ADJUDICACION"].copy()
-    out = adjudicaciones[[
-        "nro_sicop_nro_linea", "nro_linea", "nro_oferta", "descr_procedimiento",
-        "monto_adjudicado_linea", "cod_producto", "nro_sicop", "cedula_proveedor",
-        "cedula_institucion", "moneda_adjudicada", "tipo_cambio_crc", "fecha_adjudicacion",
-    ]].copy()
-    out["fecha_adjudicacion"] = pd.to_datetime(out["fecha_adjudicacion"], errors="coerce").dt.date
-    out["periodo"] = mes
-    return out
-
-
-def construir_fact_carteles(df: pd.DataFrame, mes: str) -> pd.DataFrame:
-    # TODO: ajustar el filtro que identifica las filas de tipo "cartel" en el CSV real.
-    # Esta tabla debe tener solo líneas NO adjudicadas; la reconciliación final
-    # (en carga_duckdb.py) saca las que sí se adjudicaron, aunque hayan llegado
-    # aquí en un mes distinto al de su adjudicación.
-    carteles = df[df["tipo_registro"] == "CARTEL"].copy()
-    out = carteles[[
-        "nro_sicop_nro_linea", "nro_linea", "nro_oferta", "nombre_cartel",
-        "precio_unitario_linea", "cantidad", "monto_estimado_cartel", "cod_producto",
-        "nro_sicop", "tipo_moneda", "tipo_cambio_crc", "cedula_institucion",
-        "clasificacion_cartel", "tipo_procedimiento", "fecha_publicacion", "fecha_apertura",
-    ]].copy()
-    out["monto_total_linea"] = out["precio_unitario_linea"] * out["cantidad"]
-    out["fecha_publicacion"] = pd.to_datetime(out["fecha_publicacion"], errors="coerce").dt.date
-    out["fecha_apertura"] = pd.to_datetime(out["fecha_apertura"], errors="coerce").dt.date
-    out["periodo"] = mes
-    return out[[
-        "nro_sicop_nro_linea", "nro_linea", "nro_oferta", "nombre_cartel",
-        "precio_unitario_linea", "cantidad", "monto_total_linea", "monto_estimado_cartel",
-        "cod_producto", "nro_sicop", "tipo_moneda", "tipo_cambio_crc", "cedula_institucion",
-        "clasificacion_cartel", "tipo_procedimiento", "fecha_publicacion", "fecha_apertura", "periodo",
-    ]]
+    resultado = pd.DataFrame(salida)
+    resultado["periodo"] = mes
+    return resultado
 
 
 def procesar_mes(mes: str) -> None:
-    df = cargar_mes(mes)
-    tablas = {
-        "dim_proveedores": construir_dim_proveedores(df),
-        "dim_instituciones": construir_dim_instituciones(df),
-        "dim_productos": construir_dim_productos(df),
-        "fact_ofertas": construir_fact_ofertas(df, mes),
-        "fact_adjudicaciones": construir_fact_adjudicaciones(df, mes),
-        "fact_carteles": construir_fact_carteles(df, mes),
-    }
-    carpeta_salida = os.path.join(CARPETA_PROCESADO, mes)
+    carpeta_raw = os.path.join(CARPETA_RAW, mes)
+    carpeta_salida = os.path.join(CARPETA_STAGING, mes)
     os.makedirs(carpeta_salida, exist_ok=True)
-    for nombre, tabla in tablas.items():
-        ruta = os.path.join(carpeta_salida, f"{nombre}.parquet")
-        tabla.to_parquet(ruta, index=False)
-        print(f"[{mes}] {nombre}: {len(tabla)} filas -> {ruta}")
+
+    archivos_usados = set()
+    for ruta in glob.glob(os.path.join(carpeta_raw, "*.csv")):
+        nombre_archivo = os.path.basename(ruta)
+        entrada = CONFIG_POR_ARCHIVO.get(normalizar(nombre_archivo))
+        if entrada is None:
+            print(f"[{mes}] omitido (no está en CSV_CONFIG): {nombre_archivo}")
+            continue
+        nombre_config, config = entrada
+        tabla = config["tabla"]
+        df = procesar_csv(ruta, config, mes)
+        ruta_parquet = os.path.join(carpeta_salida, f"{tabla}.parquet")
+        df.to_parquet(ruta_parquet, index=False)
+        archivos_usados.add(nombre_config)
+        print(f"[{mes}] {tabla}: {len(df)} filas <- {nombre_archivo}")
+
+    for nombre_config in set(CSV_CONFIG) - archivos_usados:
+        print(f"[{mes}] aviso: {nombre_config} no estaba en el ZIP de este mes")
 
 
 if __name__ == "__main__":
