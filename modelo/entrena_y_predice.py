@@ -22,6 +22,7 @@ import duckdb
 import joblib
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -62,10 +63,22 @@ def debe_reentrenar(forzar: bool) -> bool:
 
 
 def construir_pipeline() -> Pipeline:
-    preprocesador = ColumnTransformer(
-        [("categoricas", OneHotEncoder(handle_unknown="ignore"), COLUMNAS_CATEGORICAS)],
-        remainder="passthrough",
-    )
+    # RandomForestClassifier no acepta NaN de forma nativa, así que hay que
+    # imputar los dos grupos de columnas antes de que lleguen al bosque:
+    # - categóricas: los nulos se rellenan con un valor fijo ("desconocido")
+    #   antes de codificar, para que nunca lleguen strings vacíos al encoder.
+    # - numéricas: los nulos se rellenan con la mediana de esa columna --
+    #   más robusta que la media frente a valores atípicos (montos muy altos).
+    transformador_categoricas = Pipeline([
+        ("imputar", SimpleImputer(strategy="constant", fill_value="desconocido")),
+        ("codificar", OneHotEncoder(handle_unknown="ignore")),
+    ])
+    transformador_numericas = SimpleImputer(strategy="median")
+
+    preprocesador = ColumnTransformer([
+        ("categoricas", transformador_categoricas, COLUMNAS_CATEGORICAS),
+        ("numericas", transformador_numericas, COLUMNAS_NUMERICAS),
+    ])
     return Pipeline([
         ("preprocesamiento", preprocesador),
         ("clasificador", RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)),
