@@ -20,11 +20,11 @@ permissions:
   issues: write     # necesario para crear el issue de aviso si algo falla
 
 env:
-  NOMBRE_RELEASE: datos-actuales
+  NOMBRE_RELEASE: datos_actuales_sicop
 
 jobs:
   actualizar:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Checkout del repositorio
@@ -42,10 +42,14 @@ jobs:
       - name: Restaurar sicop.duckdb y el modelo desde el Release (si ya existen)
         run: |
           mkdir -p data modelo
-          gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber \
-            || echo "No hay un Release previo todavía; se creará una base nueva."
-          gh release download "$NOMBRE_RELEASE" -p "clasificador_adjudicacion.joblib" -D modelo/ --clobber \
-            || echo "No hay un modelo persistido todavía; se entrenará uno nuevo."
+          if gh release view "$NOMBRE_RELEASE" >/dev/null 2>&1; then
+            echo "Release '$NOMBRE_RELEASE' encontrado -- restaurando estado previo."
+            gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber
+            gh release download "$NOMBRE_RELEASE" -p "clasificador_adjudicacion.joblib" -D modelo/ --clobber \
+              || echo "El Release existe pero todavía no tiene un modelo entrenado; entrenando uno nuevo."
+          else
+            echo "::warning::No existe el Release '$NOMBRE_RELEASE' -- creando una base nueva desde cero. Si ya corriste el backfill antes con otro nombre de Release, revisa que NOMBRE_RELEASE coincida en ambos workflows."
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -24,7 +24,7 @@ env:
 
 jobs:
   backfill:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
       - name: Checkout del repositorio
@@ -43,8 +43,12 @@ jobs:
         if: github.event.inputs.reiniciar_base != 'true'
         run: |
           mkdir -p data
-          gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber \
-            || echo "No hay un Release previo; se crea una base nueva."
+          if gh release view "$NOMBRE_RELEASE" >/dev/null 2>&1; then
+            echo "Release '$NOMBRE_RELEASE' encontrado -- restaurando estado previo."
+            gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber
+          else
+            echo "::warning::No existe el Release '$NOMBRE_RELEASE' -- se crea una base nueva desde cero."
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
