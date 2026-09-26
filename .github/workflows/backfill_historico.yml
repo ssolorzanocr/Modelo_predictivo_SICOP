@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout del repositorio
-        uses: actions/github-script@v7
+        uses: actions/checkout@v6
 
       - name: Configurar Python
         uses: actions/setup-python@v7
