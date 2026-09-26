@@ -3,14 +3,18 @@ por proveedor, y genera predicciones para las ofertas de líneas de cartel
 todavía abiertas.
 
 Por defecto solo genera predicciones con el último modelo guardado -- eso
-mantiene el job diario liviano. Reentrena desde cero los lunes, o si se pasa
---forzar (útil tras un backfill o un cambio en el modelo).
+mantiene el job diario liviano. Reentrena desde cero los lunes, si se pasa
+--forzar (útil tras un backfill o un cambio en el modelo), o si el archivo
+del modelo simplemente no existe todavía (primera corrida). El .joblib se
+persiste entre corridas subiéndolo al mismo Release que sicop.duckdb -- ver
+el workflow actualizacion_diaria.yml.
 
 Con el esquema final, fact_lineas_ofertas y fact_lineas_adjudicadas ya
 comparten columnas limpias (nro_sicop, nro_linea, nro_oferta,
 cedula_proveedor) -- no hace falta derivar nada a mano.
 """
 import argparse
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -48,6 +52,10 @@ CONSULTA_PENDIENTES = """
 
 def debe_reentrenar(forzar: bool) -> bool:
     if forzar:
+        return True
+    if not os.path.exists(RUTA_MODELO):
+        # No hay modelo persistido todavía (primera corrida, o el archivo
+        # se perdió por algún motivo) -- entrenar sin importar el día.
         return True
     hoy = datetime.now(ZoneInfo("America/Costa_Rica"))
     return hoy.weekday() == 0  # 0 = lunes

@@ -29,10 +29,14 @@ Tres decisiones de diseño importantes:
    clasificación, etc.) para las líneas que sí se adjudicaron, que es
    justamente lo que hace falta para entrenar el modelo de clasificación.
 
-Supuesto a confirmar contra datos reales: en fact_adjudicaciones, la
-columna `linea` se asume equivalente a `nro_linea` de fact_lineas_adjudicadas
-para poder unir cabecera con detalle. Si no calzan, ajusta la condición del
-JOIN en final.fact_lineas_adjudicadas más abajo.
+4. dim_productos se arma juntando las 4 columnas de código de producto que
+   aparecen sueltas en staging (codigo_identificacion, codigo_producto_cl,
+   codigo_producto, prod_id) -- se filtran a solo códigos de 16 dígitos, y
+   la descripción de cada uno se toma como la más frecuente entre todas las
+   veces que ese código aparece en fact_lineas_carteles.desc_linea (es la
+   única fuente que trae texto descriptivo). El segmento (primeros 2
+   dígitos del código) se resuelve contra el catálogo UNSPSC estándar.
+
 """
 import duckdb
 
@@ -78,6 +82,124 @@ def construir(con) -> None:
             fecha_flexible(fecha_registro) AS fecha_registro
         FROM staging.dim_proveedores
         QUALIFY ROW_NUMBER() OVER (PARTITION BY cedula_proveedor ORDER BY periodo DESC) = 1
+    """)
+
+    con.execute("""
+        CREATE OR REPLACE TABLE final.dim_productos AS
+        WITH codigos_crudos AS (
+            -- Unión de las 4 fuentes de código de producto en staging.
+            SELECT SUBSTRING(TRIM(codigo_identificacion), 1, 16) AS cod_producto,
+                   TRIM(desc_linea)                              AS descr
+            FROM   staging.fact_lineas_carteles
+ 
+            UNION ALL
+ 
+            SELECT SUBSTRING(TRIM(codigo_producto_cl), 1, 16), NULL
+            FROM   staging.fact_lineas_ofertas
+ 
+            UNION ALL
+ 
+            SELECT SUBSTRING(TRIM(codigo_producto), 1, 16), NULL
+            FROM   staging.fact_lineas_adjudicadas
+ 
+            UNION ALL
+ 
+            SELECT SUBSTRING(TRIM(prod_id), 1, 16), NULL
+            FROM   staging.fact_adjudicaciones
+        ),
+        limpio AS (
+            -- Solo códigos válidos de exactamente 16 dígitos
+            SELECT cod_producto, NULLIF(descr, '') AS descr
+            FROM   codigos_crudos
+            WHERE  cod_producto ~ '^[0-9]{16}$'
+        ),
+        codigos AS (
+            SELECT DISTINCT cod_producto
+            FROM   limpio
+        ),
+        conteo AS (
+            -- Frecuencia de cada descripción por código
+            SELECT cod_producto, descr, COUNT(*) AS n
+            FROM   limpio
+            WHERE  descr IS NOT NULL
+            GROUP  BY cod_producto, descr
+        ),
+        moda_producto AS (
+            -- Descripción más frecuente por código de 16 dígitos
+            -- (empate -> orden alfabético, resultado determinístico)
+            SELECT cod_producto,
+                   descr AS descripcion_producto,
+                   ROW_NUMBER() OVER (PARTITION BY cod_producto
+                                      ORDER BY n DESC, descr) AS rk
+            FROM   conteo
+        ),
+        segmentos (segmento, nombre_segmento) AS (
+            VALUES
+            (10, 'Animales vivos, accesorios y suministros'),
+            (11, 'Material mineral, textil y vegetal'),
+            (12, 'Productos químicos incluyendo bioquímicos'),
+            (13, 'Resinas, caucho y espuma'),
+            (14, 'Papel, materiales de oficina y artículos de arte'),
+            (15, 'Combustibles, lubricantes y aceites'),
+            (20, 'Equipos de minería y cantería'),
+            (21, 'Equipos de granja y jardín y silvicultura'),
+            (22, 'Equipos de construcción y mantenimiento'),
+            (23, 'Maquinaria industrial y equipos de manufactura'),
+            (24, 'Materiales y accesorios de manejo de materiales'),
+            (25, 'Vehículos comerciales, militares y de uso personal'),
+            (26, 'Componentes y suministros de potencia generación y transmisión'),
+            (27, 'Herramientas y maquinaria general'),
+            (30, 'Estructuras, edificaciones, fabricaciones y acondicionamiento de espacios'),
+            (31, 'Materiales de manufactura y procesamiento'),
+            (32, 'Componentes electrónicos'),
+            (39, 'Iluminación, distribución eléctrica y accesorios'),
+            (40, 'Equipos de distribución y condicionamiento de fluidos'),
+            (41, 'Instrumentos de laboratorio, medición y observación'),
+            (42, 'Equipo médico, accesorios e insumos'),
+            (43, 'Tecnología de información, telecomunicaciones y radiodifusión'),
+            (44, 'Suministros de oficina, accesorios y consumibles'),
+            (45, 'Imprenta, equipos fotográficos y audiovisuales'),
+            (46, 'Seguridad, protección y defensa'),
+            (47, 'Limpieza y mantenimiento de instalaciones y productos'),
+            (48, 'Equipos y suministros industriales'),
+            (49, 'Deportes, recreación, entretenimiento y educación'),
+            (50, 'Productos alimenticios, bebidas y tabaco'),
+            (51, 'Medicamentos y productos farmacéuticos'),
+            (52, 'Ropa, calzado y accesorios de uso personal'),
+            (53, 'Artículos domésticos, personales y de consumo'),
+            (54, 'Artículos de uso público y eventos'),
+            (55, 'Publicaciones, grabaciones y medios de información'),
+            (56, 'Mobiliario y decoración'),
+            (60, 'Instrumentos musicales, artes y manualidades'),
+            (64, 'Artículos de colección y bellas artes'),
+            (70, 'Servicios de agricultura, pesca, silvicultura y caza'),
+            (71, 'Servicios de minería y petróleo y gas'),
+            (72, 'Servicios de construcción y mantenimiento de edificios'),
+            (73, 'Servicios de manufactura industrial'),
+            (76, 'Servicios de limpieza industrial'),
+            (77, 'Servicios medioambientales'),
+            (78, 'Servicios de transporte, almacenamiento y correo'),
+            (80, 'Servicios profesionales de gestión y administración'),
+            (81, 'Servicios de ingeniería, investigación y tecnología'),
+            (82, 'Servicios editoriales y gráficos'),
+            (83, 'Servicios de salud pública'),
+            (84, 'Servicios financieros y de seguros'),
+            (85, 'Servicios de salud y asistencia social'),
+            (86, 'Servicios de educación y formación'),
+            (90, 'Servicios de viaje, alimentación y alojamiento'),
+            (91, 'Servicios personales y domésticos'),
+            (92, 'Defensa, orden público y seguridad'),
+            (93, 'Servicios políticos y de asuntos cívicos'),
+            (94, 'Organizaciones, asociaciones y afiliaciones'),
+            (95, 'Tierras, edificios, estructuras y vías')
+        )
+        SELECT c.cod_producto::BIGINT                    AS cod_producto,
+               LEFT(mp.descripcion_producto, 500)        AS descripcion_producto,
+               SUBSTRING(c.cod_producto, 1, 2)::INTEGER  AS segmento,
+               s.nombre_segmento
+        FROM   codigos c
+        LEFT JOIN moda_producto mp ON mp.cod_producto = c.cod_producto AND mp.rk = 1
+        LEFT JOIN segmentos     s  ON s.segmento = SUBSTRING(c.cod_producto, 1, 2)::INTEGER
     """)
 
     con.execute("""

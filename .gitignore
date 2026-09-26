@@ -2,7 +2,3 @@
 .venv/
 # Environment variables
 .env
-# Previous schemas
-esquema.sql
-# Previous etl py files versions
-etl/carga_duckdb.py

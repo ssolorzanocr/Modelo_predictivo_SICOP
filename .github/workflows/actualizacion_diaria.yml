@@ -2,7 +2,7 @@ name: Actualización diaria SICOP
 
 on:
   schedule:
-    - cron: "30 14 * * *"  # 08:30 hora de Costa Rica (UTC-6); el Observatorio publica a las 08:00
+    - cron: "30 10 * * *"  # 08:30 hora de Costa Rica (UTC-6); el Observatorio publica a las 08:00
   workflow_dispatch:
     inputs:
       forzar_reentrenamiento:
@@ -39,11 +39,13 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Restaurar sicop.duckdb desde el Release (si ya existe)
+      - name: Restaurar sicop.duckdb y el modelo desde el Release (si ya existen)
         run: |
-          mkdir -p data
+          mkdir -p data modelo
           gh release download "$NOMBRE_RELEASE" -p "sicop.duckdb" -D data/ --clobber \
             || echo "No hay un Release previo todavía; se creará una base nueva."
+          gh release download "$NOMBRE_RELEASE" -p "clasificador_adjudicacion.joblib" -D modelo/ --clobber \
+            || echo "No hay un modelo persistido todavía; se entrenará uno nuevo."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -67,12 +69,13 @@ jobs:
             python modelo/entrena_y_predice.py
           fi
 
-      - name: Publicar sicop.duckdb actualizado en el Release
+      - name: Publicar sicop.duckdb y el modelo actualizados en el Release
         run: |
           if gh release view "$NOMBRE_RELEASE" >/dev/null 2>&1; then
             gh release upload "$NOMBRE_RELEASE" data/sicop.duckdb --clobber
+            gh release upload "$NOMBRE_RELEASE" modelo/clasificador_adjudicacion.joblib --clobber
           else
-            gh release create "$NOMBRE_RELEASE" data/sicop.duckdb \
+            gh release create "$NOMBRE_RELEASE" data/sicop.duckdb modelo/clasificador_adjudicacion.joblib \
               --title "Base de datos SICOP" \
               --notes "Se actualiza automáticamente todos los días."
           fi
