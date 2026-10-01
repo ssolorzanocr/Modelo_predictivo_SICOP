@@ -7,3 +7,6 @@
 localdata/
 #notebooks
 *.ipynb
+#compiled Python files
+modelo/__pychache__/
+*.pyc

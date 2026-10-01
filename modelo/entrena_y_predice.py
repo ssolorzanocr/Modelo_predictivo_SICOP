@@ -69,7 +69,7 @@ BUFFER_DIAS_DECISION = 90
 COLUMNAS_CATEGORICAS = ["tamano_proveedor", "segmento", "tipo_procedimiento"]
 COLUMNAS_NUMERICAS = [
     "proveedores_adjudicados_distintos",
-    "porcentaje_exito",
+    #"porcentaje_exito",
     "radio_competitividad",
     "productos_distintos_ofertados",
     "cantidad_solicitada",
