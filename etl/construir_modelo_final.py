@@ -351,11 +351,17 @@ def construir(con) -> None:
             b.tamano_proveedor,
             b.zona_geo_prov,
             fecha_flexible(b.fecha_registro) AS fecha_registro,
+
+            COALESCE(g.ofertas_ganadas, 0) / NULLIF(o.ofertas_presentadas, 0) AS porcentaje_exito,
+            COALESCE(o.productos_distintos_ofertados, 0) AS productos_distintos_ofertados
+            -- Promedio sobre TODO el histórico -- útil para dashboards/BI,
+            -- pero NO se usa como variable del modelo de ML: modelo/
+            -- entrena_y_predice.py calcula su propia versión
+            -- (porcentaje_exito_historico) respetando la fecha de cada
+            -- oferta, para no filtrar información del futuro hacia atrás.
             -- Expresado como fracción (0 a 1), no como 0 a 100. NULL para
             -- proveedores que nunca presentaron una oferta (no 0: el éxito
             -- no está definido si no hay ofertas de por medio).
-            COALESCE(g.ofertas_ganadas, 0) / NULLIF(o.ofertas_presentadas, 0) AS porcentaje_exito,
-            COALESCE(o.productos_distintos_ofertados, 0) AS productos_distintos_ofertados
         FROM base b
         LEFT JOIN ofertas_por_proveedor o ON o.cedula_proveedor = b.cedula_proveedor
         LEFT JOIN ofertas_ganadas_por_proveedor g ON g.cedula_proveedor = b.cedula_proveedor
@@ -372,3 +378,4 @@ if __name__ == "__main__":
     con = duckdb.connect(RUTA_DUCKDB)
     construir(con)
     con.close()
+ 
