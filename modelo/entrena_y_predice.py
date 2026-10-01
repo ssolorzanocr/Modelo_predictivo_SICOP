@@ -23,6 +23,21 @@ Todas estas viven en tablas distintas, así que las dos consultas SQL unen
 fact_lineas_ofertas con fact_lineas_carteles, dim_proveedores, dim_productos
 y dim_instituciones -- no hace falta ninguna transformación en Python, todo
 el join queda resuelto en DuckDB antes de que pandas reciba el resultado.
+Etiquetado de fue_adjudicado (importante): una oferta sin adjudicación
+registrada NO siempre significa "perdió" -- puede que el procedimiento
+todavía no se haya resuelto. Se etiqueta FALSE en cuanto el nro_sicop ya
+tiene alguna adjudicación registrada (sin esperar ningún número fijo de
+días), con BUFFER_DIAS_DECISION como respaldo solo para procedimientos que
+nunca adjudican nada a nadie (desiertos/cancelados). Ver el comentario
+junto a CONSULTA_ENTRENAMIENTO para el detalle completo de las 4 reglas.
+Las ofertas sin ninguna de esas señales quedan en NULL y se excluyen por
+completo del entrenamiento y la prueba.
+ 
+El split de entrenamiento/prueba es cronológico, no aleatorio: las ofertas
+más antiguas van a entrenamiento, las más recientes (dentro del rango ya
+confiable) van a prueba. Así se imita cómo se usa el modelo en producción
+-- predecir el futuro con el pasado -- en vez de dejar que el modelo
+entrene con datos posteriores a los que se usan para evaluarlo.
 """
 import argparse
 import os
@@ -31,15 +46,25 @@ from zoneinfo import ZoneInfo
  
 import duckdb
 import joblib
+import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
  
 RUTA_DUCKDB = "data/sicop.duckdb"
 RUTA_MODELO = "modelo/clasificador_adjudicacion.joblib"
+ 
+# Días desde fecha_oferta a partir de los cuales se asume que un
+# procedimiento (nro_sicop) que nunca adjudicó nada a nadie fue declarado
+# desierto/infructuoso o cancelado -- es el RESPALDO para cuando la señal
+# principal (ver más abajo) nunca llega, no la vía principal hacia FALSE.
+# Se fijó en 90 con base en un análisis real del tiempo entre oferta y
+# adjudicación: mediana 27 días, p90 84 días, p99 168 días -- 90 queda
+# apenas por encima del p90. Si el ritmo de resolución cambia con el
+# tiempo, vale la pena revisar este número corriendo de nuevo ese análisis.
+BUFFER_DIAS_DECISION = 90
  
 COLUMNAS_CATEGORICAS = ["tamano_proveedor", "segmento", "tipo_procedimiento"]
 COLUMNAS_NUMERICAS = [
@@ -64,24 +89,56 @@ JOINS_ENRIQUECIMIENTO = """
     LEFT JOIN final.dim_instituciones i ON i.cedula = c.cedula_institucion
 """
  
+# Etiquetado de fue_adjudicado, en orden de prioridad:
+#   1. Esta oferta puntual (nro_sicop+nro_linea+nro_oferta+cedula_proveedor)
+#      aparece en fact_lineas_adjudicadas -> TRUE.
+#   2. El nro_sicop YA tiene alguna adjudicación registrada (de otra oferta,
+#      otra línea) -> el procedimiento se resolvió y no fue esta -> FALSE.
+#      Esta es la señal rápida: no espera ningún número fijo de días, usa
+#      el hecho de que SICOP ya publicó una decisión para ese procedimiento.
+#   3. El nro_sicop no tiene NINGUNA adjudicación todavía, pero ya pasó
+#      BUFFER_DIAS_DECISION desde la oferta -> se asume desierto/cancelado
+#      -> FALSE. Este es el respaldo para procedimientos que nunca
+#      adjudican nada a nadie (si no existiera, esas ofertas quedarían en
+#      NULL para siempre y el modelo nunca vería ese tipo de caso).
+#   4. Cualquier otro caso -> NULL, se excluye (ver el WHERE más abajo).
+#
+# fecha_oferta se incluye para poder hacer el split cronológico en Python;
+# no es una variable del modelo (no está en COLUMNAS_NUMERICAS).
 CONSULTA_ENTRENAMIENTO = f"""
-    SELECT
-        p.tamano_proveedor,
-        pr.segmento,
-        c.tipo_procedimiento,
-        i.proveedores_adjudicados_distintos,
-        p.porcentaje_exito,
-        o.radio_competitividad,
-        p.productos_distintos_ofertados,
-        c.cantidad_solicitada,
-        o.cantidad_ofertada,
-        (a.nro_oferta IS NOT NULL) AS fue_adjudicado
-    {JOINS_ENRIQUECIMIENTO}
-    LEFT JOIN final.fact_lineas_adjudicadas a
-        ON a.nro_sicop = o.nro_sicop AND a.nro_linea = o.nro_linea
-       AND a.nro_oferta = o.nro_oferta AND a.cedula_proveedor = o.cedula_proveedor
+    WITH sicops_resueltos AS (
+        SELECT DISTINCT nro_sicop FROM final.fact_lineas_adjudicadas
+    ),
+    etiquetado AS (
+        SELECT
+            p.tamano_proveedor,
+            pr.segmento,
+            c.tipo_procedimiento,
+            i.proveedores_adjudicados_distintos,
+            p.porcentaje_exito,
+            o.radio_competitividad,
+            p.productos_distintos_ofertados,
+            c.cantidad_solicitada,
+            o.cantidad_ofertada,
+            o.fecha_oferta,
+            CASE
+                WHEN a.nro_oferta IS NOT NULL THEN TRUE
+                WHEN sr.nro_sicop IS NOT NULL THEN FALSE
+                WHEN DATE_DIFF('day', o.fecha_oferta, CURRENT_DATE) > {BUFFER_DIAS_DECISION} THEN FALSE
+                ELSE NULL
+            END AS fue_adjudicado
+        {JOINS_ENRIQUECIMIENTO}
+        LEFT JOIN final.fact_lineas_adjudicadas a
+            ON a.nro_sicop = o.nro_sicop AND a.nro_linea = o.nro_linea
+           AND a.nro_oferta = o.nro_oferta AND a.cedula_proveedor = o.cedula_proveedor
+        LEFT JOIN sicops_resueltos sr ON sr.nro_sicop = o.nro_sicop
+    )
+    SELECT * FROM etiquetado WHERE fue_adjudicado IS NOT NULL
 """
  
+# CONSULTA_PENDIENTES no aplica el mismo buffer -- acá sí queremos predecir
+# justamente las líneas más recientes que todavía no se resuelven; para eso
+# ya existe fact_lineas_carteles.adjudicada, que no depende de fechas.
 CONSULTA_PENDIENTES = f"""
     SELECT
         o.nro_sicop,
@@ -113,6 +170,18 @@ def debe_reentrenar(forzar: bool) -> bool:
     return hoy.weekday() == 0  # 0 = lunes
  
  
+def dividir_train_test_cronologico(
+    df: pd.DataFrame, columna_fecha: str = "fecha_oferta", proporcion_test: float = 0.2
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Divide por fecha en vez de al azar: lo más antiguo a entrenamiento, lo
+    más reciente a prueba. No usa stratify -- con un corte cronológico no
+    tiene sentido forzar la misma proporción de clases en ambos lados; es
+    normal (y esperado) que difiera un poco entre períodos."""
+    df_ordenado = df.sort_values(columna_fecha).reset_index(drop=True)
+    corte = int(len(df_ordenado) * (1 - proporcion_test))
+    return df_ordenado.iloc[:corte], df_ordenado.iloc[corte:]
+ 
+ 
 def construir_pipeline() -> Pipeline:
     # RandomForestClassifier no acepta NaN de forma nativa, así que hay que
     # imputar los dos grupos de columnas antes de que lleguen al bosque:
@@ -138,14 +207,17 @@ def construir_pipeline() -> Pipeline:
  
 def entrenar(con) -> None:
     df = con.execute(CONSULTA_ENTRENAMIENTO).df()
-    y = df.pop("fue_adjudicado")
-    X = df[COLUMNAS_CATEGORICAS + COLUMNAS_NUMERICAS]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    df["fue_adjudicado"] = df["fue_adjudicado"].astype(bool)
+    train_df, test_df = dividir_train_test_cronologico(df)
+ 
+    y_train = train_df.pop("fue_adjudicado")
+    X_train = train_df[COLUMNAS_CATEGORICAS + COLUMNAS_NUMERICAS]
+    y_test = test_df.pop("fue_adjudicado")
+    X_test = test_df[COLUMNAS_CATEGORICAS + COLUMNAS_NUMERICAS]
+ 
     pipeline = construir_pipeline()
     pipeline.fit(X_train, y_train)
-    print(f"Exactitud en validación: {pipeline.score(X_test, y_test):.3f}")
+    print(f"Exactitud en validación (split cronológico): {pipeline.score(X_test, y_test):.3f}")
     joblib.dump(pipeline, RUTA_MODELO)
  
  
