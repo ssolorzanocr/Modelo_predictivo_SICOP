@@ -208,17 +208,25 @@ def construir(con) -> None:
             c.cartel_nm,
             fecha_flexible(c.fechah_apertura) AS fecha_apertura,
             c.clas_obj AS clasificacion_cartel,
-            TRY_CAST(c.monto_est AS DOUBLE) AS monto_estimado_cartel,
             l.codigo_identificacion AS cod_producto,
-            TRY_CAST(l.cantidad_solicitada AS DOUBLE) AS cantidad_solicitada,
-            TRY_CAST(l.precio_unitario_estimado AS DOUBLE) AS precio_unitario_estimado,
             l.tipo_moneda,
             TRY_CAST(l.tipo_cambio_crc AS DOUBLE) AS tipo_cambio_crc,
-            -- monto_linea siempre en colones: si ya es CRC no se convierte
+            
+            -- montos siempre en colones: si ya es CRC no se convierte
             -- (factor 1), si no, se multiplica por el tipo de cambio.
+            TRY_CAST(c.monto_est AS DOUBLE)
+                *CASE WHEN l.tipo_moneda = 'CRC' THEN 1
+                    ELSE TRY_CAST(l.tipo_cambio_crc AS DOUBLE) END AS monto_estimado_cartel,
+
+            TRY_CAST(l.cantidad_solicitada AS DOUBLE) AS cantidad_solicitada,
+
+            TRY_CAST(l.precio_unitario_estimado AS DOUBLE)
+                * CASE WHEN l.tipo_moneda = 'CRC' THEN 1
+                    ELSE TRY_CAST(l.tipo_cambio_crc AS DOUBLE) END AS precio_unitario_estimado,
+
             TRY_CAST(l.monto_reservado AS DOUBLE)
                 * CASE WHEN l.tipo_moneda = 'CRC' THEN 1
-                       ELSE TRY_CAST(l.tipo_cambio_crc AS DOUBLE) END AS monto_linea,
+                       ELSE TRY_CAST(l.tipo_cambio_crc AS DOUBLE) END AS monto_linea_cartel,
             l.desc_linea,
             EXISTS (
                 SELECT 1 FROM staging.fact_lineas_adjudicadas a
@@ -243,14 +251,19 @@ def construir(con) -> None:
                 o.tipo_oferta,
                 lo.codigo_producto_cl AS cod_producto,
                 TRY_CAST(lo.cantidad_ofertada AS DOUBLE) AS cantidad_ofertada,
-                TRY_CAST(lo.precio_unitario_ofertado AS DOUBLE) AS precio_unitario_ofertado,
                 lo.tipo_moneda,
                 TRY_CAST(lo.tipo_cambio_crc AS DOUBLE) AS tipo_cambio_crc,
-                -- monto_linea siempre en colones: mismo criterio que en
+                -- montos siempre en colones: mismo criterio que en
                 -- fact_lineas_carteles (factor 1 si ya es CRC).
+
+                TRY_CAST(lo.precio_unitario_ofertado AS DOUBLE)
+                    * CASE WHEN lo.tipo_moneda = 'CRC' THEN 1
+                            ELSE TRY_CAST(lo.tipo_cambio_crc AS DOUBLE) END AS precio_unitario_ofertado,
+                
                 (TRY_CAST(lo.cantidad_ofertada AS DOUBLE) * TRY_CAST(lo.precio_unitario_ofertado AS DOUBLE))
                     * CASE WHEN lo.tipo_moneda = 'CRC' THEN 1
-                           ELSE TRY_CAST(lo.tipo_cambio_crc AS DOUBLE) END AS monto_linea
+                           ELSE TRY_CAST(lo.tipo_cambio_crc AS DOUBLE) END AS monto_linea_oferta
+
             FROM staging.fact_ofertas o
             JOIN staging.fact_lineas_ofertas lo USING (nro_oferta)
             QUALIFY ROW_NUMBER() OVER (
@@ -260,11 +273,11 @@ def construir(con) -> None:
         SELECT
             b.*,
             -- radio de competitividad: cuánto pidió/estimó la institución
-            -- (fact_lineas_carteles.monto_linea) contra cuánto ofreció el
-            -- proveedor (b.monto_linea), ambos ya en colones. < 1 significa
+            -- (fact_lineas_carteles.monto_linea_cartel) contra cuánto ofreció el
+            -- proveedor (b.monto_linea_oferta), ambos ya en colones. < 1 significa
             -- que la oferta fue más barata que lo estimado por la
             -- institución; NULLIF evita dividir entre cero.
-            c.monto_linea / NULLIF(b.monto_linea, 0) AS radio_competitividad
+            c.monto_linea_cartel / NULLIF(b.monto_linea_oferta, 0) AS radio_competitividad
         FROM base b
         LEFT JOIN final.fact_lineas_carteles c
             ON c.nro_sicop = b.nro_sicop AND c.numero_linea = b.nro_linea
@@ -280,13 +293,20 @@ def construir(con) -> None:
             a.numero_procedimiento,
             a.descr_procedimiento,
             fecha_flexible(a.fecha_adjud_firme) AS fecha_adjudicacion,
-            TRY_CAST(a.monto_adju_linea AS DOUBLE) AS monto_adjudicado_linea,
             la.cedula_proveedor,
             la.codigo_producto AS cod_producto,
             TRY_CAST(la.cantidad_adjudicada AS DOUBLE) AS cantidad_adjudicada,
-            TRY_CAST(la.precio_unitario_adjudicado AS DOUBLE) AS precio_unitario_adjudicado,
             la.tipo_moneda,
-            TRY_CAST(la.tipo_cambio_crc AS DOUBLE) AS tipo_cambio_crc
+            TRY_CAST(la.tipo_cambio_crc AS DOUBLE) AS tipo_cambio_crc,
+
+            TRY_CAST(a.monto_adju_linea AS DOUBLE)
+                * CASE WHEN la.tipo_moneda = 'CRC' THEN 1
+                    ELSE TRY_CAST(la.tipo_cambio_crc AS DOUBLE) END AS monto_adjudicado_linea,
+
+            TRY_CAST(la.precio_unitario_adjudicado AS DOUBLE)
+                * CASE WHEN la.tipo_moneda = 'CRC' THEN 1
+                    ELSE TRY_CAST(la.tipo_cambio_crc AS DOUBLE) END AS precio_unitario_adjudicado
+
         FROM staging.fact_adjudicaciones a
         JOIN staging.fact_lineas_adjudicadas la
             ON la.nro_sicop = a.nro_sicop AND la.nro_linea = a.linea
