@@ -312,7 +312,7 @@ def construir_pipeline() -> Pipeline:
             n_estimators=150,
             min_samples_leaf=2,
             max_depth=10,
-            p_max_features="log2", 
+            max_features="log2", 
             random_state=42, 
             n_jobs=-1)),
     ])
