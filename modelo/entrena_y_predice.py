@@ -307,7 +307,14 @@ def construir_pipeline() -> Pipeline:
     ])
     return Pipeline([
         ("preprocesamiento", preprocesador),
-        ("clasificador", RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)),
+        ("clasificador", RandomForestClassifier(
+            # Parámetros elegidos tras un random search con validación cruzada (5 folds)
+            n_estimators=150,
+            min_samples_leaf=2,
+            max_depth=10,
+            p_max_features="log2", 
+            random_state=42, 
+            n_jobs=-1)),
     ])
 
 

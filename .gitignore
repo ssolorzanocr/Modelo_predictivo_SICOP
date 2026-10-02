@@ -5,8 +5,9 @@
 # Bases de datos locales
 *.duckdb
 localdata/
-#notebooks
-*.ipynb
+#local notebooks
+local_notebooks/
+#*.ipynb
 #compiled Python files
 modelo/__pychache__/
 *.pyc
