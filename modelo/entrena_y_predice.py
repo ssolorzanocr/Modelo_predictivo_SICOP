@@ -246,12 +246,29 @@ CONSULTA_ENTRENAMIENTO = f"""
     SELECT * FROM etiquetado WHERE fue_adjudicado IS NOT NULL
 """
 
-# CONSULTA_PENDIENTES no aplica el buffer de decisión -- acá sí queremos
-# predecir justamente las líneas más recientes que todavía no se resuelven;
-# para eso ya existe fact_lineas_carteles.adjudicada, que no depende de
-# fechas. Las dos variables "_historico" sí aplican igual: para una oferta
-# de hoy, cuentan usando todo lo anterior a hoy -- el mismo criterio que se
-# usó para cada fila de entrenamiento en su propio momento.
+# CONSULTA_PENDIENTES SÍ necesita su propio filtro de fechas -- a diferencia
+# de lo que un comentario anterior de este archivo asumía, fact_lineas_
+# carteles.adjudicada = false por sí solo NO distingue entre tres casos muy
+# distintos:
+#   1. Líneas que todavía NO cierran para recibir ofertas (fecha_apertura en
+#      el futuro) -- acá intensidad_competencia y precio_relativo_
+#      competidores todavía no son definitivos: el conjunto de competidores
+#      sigue creciendo. Se excluyen con fecha_apertura <= CURRENT_DATE.
+#   2. Líneas recién cerradas, esperando una decisión que todavía es
+#      plausible -- el caso real que queremos predecir.
+#   3. Líneas cerradas hace mucho tiempo sin decisión -- casi seguro
+#      abandonadas/desiertas, nunca se van a resolver. Predecir sobre ellas
+#      desperdicia cómputo y llena predicciones_adjudicacion de filas que
+#      nadie va a poder usar. Se excluyen igual que en el entrenamiento, con
+#      el mismo BUFFER_DIAS_DECISION (ahora medido desde fecha_apertura, no
+#      desde fecha_oferta -- son fechas muy cercanas entre sí, pero
+#      apertura es la referencia correcta aquí: es cuando se cierra el
+#      conjunto de competidores, no cuando cada proveedor presentó la suya).
+#
+# Las dos variables "_historico" sí aplican sin ningún ajuste adicional:
+# para una oferta de hoy, cuentan usando todo lo anterior a hoy -- el mismo
+# criterio que se usó para cada fila de entrenamiento en su propio momento.
+
 CONSULTA_PENDIENTES = f"""
     WITH {CTE_ENRIQUECIMIENTO_HISTORICO}
     SELECT
@@ -260,7 +277,6 @@ CONSULTA_PENDIENTES = f"""
         o.nro_oferta,
         o.cedula_proveedor,
         p.tamano_proveedor,
-        -- pr.segmento,
         c.tipo_procedimiento,
         i.proveedores_adjudicados_distintos,
         eh.porcentaje_exito_historico,
@@ -272,6 +288,8 @@ CONSULTA_PENDIENTES = f"""
         o.precio_relativo_competidores
     {JOINS_ENRIQUECIMIENTO}
     WHERE c.adjudicada = false
+      AND c.fecha_apertura <= CURRENT_DATE
+      AND DATE_DIFF('day', c.fecha_apertura, CURRENT_DATE) <= {BUFFER_DIAS_DECISION}
 """
 
 
@@ -320,11 +338,11 @@ def construir_pipeline() -> Pipeline:
         ("preprocesamiento", preprocesador),
         ("clasificador", RandomForestClassifier(
             # Parámetros elegidos tras un random search con validación cruzada (5 folds)
-            class_weight="balanced", # para compensar la clase minoritaria (TRUE) frente a la mayoritaria (FALSE)
-            n_estimators=300,
-            min_samples_leaf=10,
-            max_depth=15,
-            max_features="log2", 
+            class_weight="balanced_subsample", # balancea clases en cada árbol, no en todo el bosque.
+            n_estimators=100,
+            min_samples_leaf=20,
+            max_depth=20,
+            max_features="sqrt", 
             random_state=42, 
             n_jobs=-1)),
     ])
