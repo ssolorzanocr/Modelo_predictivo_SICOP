@@ -308,8 +308,8 @@ def construir(con) -> None:
             -- oferta contra sí misma si presentó más de una oferta
             -- alternativa en la misma línea). NULL cuando nadie más ofertó
             -- en esa línea -- no hay competidor contra quién comparar.
-            (b.monto_linea / NULLIF(b.cantidad_ofertada, 0)) / NULLIF((
-                SELECT median(b2.monto_linea / NULLIF(b2.cantidad_ofertada, 0))
+            (b.monto_linea_oferta / NULLIF(b.cantidad_ofertada, 0)) / NULLIF((
+                SELECT median(b2.monto_linea_oferta / NULLIF(b2.cantidad_ofertada, 0))
                 FROM base b2
                 WHERE b2.nro_sicop = b.nro_sicop AND b2.nro_linea = b.nro_linea
                   AND b2.cedula_proveedor <> b.cedula_proveedor
