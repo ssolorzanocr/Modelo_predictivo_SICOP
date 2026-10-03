@@ -11,17 +11,21 @@ el workflow actualizacion_diaria.yml.
 
 Variables de entrada (revisadas para reducir la cardinalidad de la rama
 categórica frente a la versión anterior, que usaba cod_producto completo):
-- categóricas: tamano_proveedor (dim_proveedores), segmento (dim_productos,
-  ~56 valores en vez de miles de códigos de producto), tipo_procedimiento
+- categóricas: tamano_proveedor (dim_proveedores), tipo_procedimiento
   (fact_lineas_carteles).
 - numéricas: proveedores_adjudicados_distintos (dim_instituciones),
   porcentaje_exito_historico y productos_distintos_historico (ambas
   calculadas "a la fecha" de cada oferta, ver CTE_ENRIQUECIMIENTO_HISTORICO
   -- NO son dim_proveedores.porcentaje_exito ni
   dim_proveedores.productos_distintos_ofertados, que son agregados fijos
-  sobre todo el histórico y tienen fuga de información), radio_competitividad
-  y cantidad_ofertada (fact_lineas_ofertas), cantidad_solicitada
-  (fact_lineas_carteles).
+  sobre todo el histórico y tienen fuga de información), radio_competitividad,
+  cantidad_ofertada, intensidad_competencia y precio_relativo_competidores
+  (las cuatro de fact_lineas_ofertas), cantidad_solicitada
+  (fact_lineas_carteles). Las últimas dos miden competencia dentro de la
+  misma línea (cuántos proveedores ofertaron, y el precio de esta oferta
+  contra la mediana de los demás) -- no necesitan tratamiento point-in-time
+  como las "_historico", porque todas las ofertas de una línea se presentan
+  dentro de la misma ventana de apertura del cartel, no a lo largo de meses.
 
 Todas estas viven en tablas distintas, así que las dos consultas SQL unen
 fact_lineas_ofertas con fact_lineas_carteles, dim_proveedores, dim_productos
@@ -70,7 +74,7 @@ RUTA_MODELO = "modelo/clasificador_adjudicacion.joblib"
 # tiempo, vale la pena revisar este número corriendo de nuevo ese análisis.
 BUFFER_DIAS_DECISION = 90
 
-COLUMNAS_CATEGORICAS = ["tamano_proveedor", "segmento", "tipo_procedimiento"]
+COLUMNAS_CATEGORICAS = ["tamano_proveedor", "tipo_procedimiento"]
 COLUMNAS_NUMERICAS = [
     "proveedores_adjudicados_distintos",
     "porcentaje_exito_historico",
@@ -78,6 +82,8 @@ COLUMNAS_NUMERICAS = [
     "productos_distintos_historico",
     "cantidad_solicitada",
     "cantidad_ofertada",
+    "intensidad_competencia",
+    "precio_relativo_competidores",
 ]
 
 # Las cuatro tablas de enriquecimiento (fact_lineas_carteles, dim_proveedores,
@@ -86,12 +92,13 @@ COLUMNAS_NUMERICAS = [
 # solo cambia el SELECT final y si se filtra por líneas pendientes.
 # Nota: dim_proveedores.porcentaje_exito y
 # dim_proveedores.productos_distintos_ofertados (ambos promedios/conteos
-# sobre TODO el histórico) ya NO se usan como variables del modelo -- se
+# sobre todo el histórico) ya NO se usan como variables del modelo -- se
 # reemplazaron por porcentaje_exito_historico y productos_distintos_historico
 # (ver CTE_ENRIQUECIMIENTO_HISTORICO abajo), que sí respetan la fecha de cada
 # oferta. Las dos columnas de dim_proveedores se dejan tal cual para uso
 # descriptivo/BI (dashboards, estudios de proveedores), donde la fuga de
 # información no aplica -- pero no deben volver a usarse para entrenar.
+
 JOINS_ENRIQUECIMIENTO = """
     FROM final.fact_lineas_ofertas o
     JOIN final.fact_lineas_carteles c
@@ -213,7 +220,7 @@ CONSULTA_ENTRENAMIENTO = f"""
     etiquetado AS (
         SELECT
             p.tamano_proveedor,
-            pr.segmento,
+            -- pr.segmento,
             c.tipo_procedimiento,
             i.proveedores_adjudicados_distintos,
             eh.porcentaje_exito_historico,
@@ -221,6 +228,8 @@ CONSULTA_ENTRENAMIENTO = f"""
             eh.productos_distintos_historico,
             c.cantidad_solicitada,
             o.cantidad_ofertada,
+            o.intensidad_competencia,
+            o.precio_relativo_competidores,
             o.fecha_oferta,
             CASE
                 WHEN a.nro_oferta IS NOT NULL THEN TRUE
@@ -251,14 +260,16 @@ CONSULTA_PENDIENTES = f"""
         o.nro_oferta,
         o.cedula_proveedor,
         p.tamano_proveedor,
-        pr.segmento,
+        -- pr.segmento,
         c.tipo_procedimiento,
         i.proveedores_adjudicados_distintos,
         eh.porcentaje_exito_historico,
         o.radio_competitividad,
         eh.productos_distintos_historico,
         c.cantidad_solicitada,
-        o.cantidad_ofertada
+        o.cantidad_ofertada,
+        o.intensidad_competencia,
+        o.precio_relativo_competidores
     {JOINS_ENRIQUECIMIENTO}
     WHERE c.adjudicada = false
 """
@@ -309,9 +320,10 @@ def construir_pipeline() -> Pipeline:
         ("preprocesamiento", preprocesador),
         ("clasificador", RandomForestClassifier(
             # Parámetros elegidos tras un random search con validación cruzada (5 folds)
-            n_estimators=150,
-            min_samples_leaf=2,
-            max_depth=10,
+            class_weight="balanced", # para compensar la clase minoritaria (TRUE) frente a la mayoritaria (FALSE)
+            n_estimators=300,
+            min_samples_leaf=10,
+            max_depth=15,
             max_features="log2", 
             random_state=42, 
             n_jobs=-1)),
@@ -330,7 +342,7 @@ def entrenar(con) -> None:
 
     pipeline = construir_pipeline()
     pipeline.fit(X_train, y_train)
-    print(f"Exactitud en validación (split cronológico): {pipeline.score(X_test, y_test):.3f}")
+    print(f"Exactitud en validación (test): {pipeline.score(X_test, y_test):.3f}")
     joblib.dump(pipeline, RUTA_MODELO)
 
 

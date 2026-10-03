@@ -7,10 +7,12 @@ de datos de este proyecto, DuckDB hace esto en segundos, así que es más
 simple que mantener un "final" incremental.
  
 Decisiones de diseño importantes:
- 
+
 1. TRY_CAST en vez de CAST: si un valor no se puede convertir, el resultado
-   es NULL en vez de que falle toda la carga. TRY_CAST no avisa cuando 
-   falla, solo devuelve NULL en silencio.
+   es NULL en vez de que falle toda la carga. Ojo con esto: TRY_CAST no
+   avisa cuando falla, solo devuelve NULL en silencio -- si ves NULL
+   inesperados en una columna, es la señal de que el formato de origen no
+   es el que se está asumiendo.
  
 2. Fechas con formato mixto: en los CSV reales aparecen fechas como
    "2017-11-08 00:00:00.0000000" (ISO con fracción de segundo, típico de
@@ -37,16 +39,26 @@ Decisiones de diseño importantes:
  
 5. monto_linea siempre queda en colones (CRC). Cuando tipo_moneda ya es
    'CRC' se deja el monto tal cual (el factor de conversión es 1); en
-   cualquier otro caso se multiplica por tipo_cambio_crc. Si una línea
+   cualquier otro caso se multiplica por tipo_cambio_crc. Ojo: si una línea
    viene en moneda distinta a CRC pero tipo_cambio_crc es NULL, el
-   resultado de monto_linea también será NULL -- se prefiere a inventar
+   resultado de monto_linea también será NULL -- es preferible a inventar
    un tipo de cambio o mezclar colones con dólares sin convertir.
  
-6. Indicadores agregados para el modelo de ML: dim_instituciones y
+6. Nuevas variables de competencia por línea: intensidad_competencia
+   (cuántos proveedores distintos ofertaron en esa línea) y
+   precio_relativo_competidores (precio de esta oferta contra la mediana de
+   precio de los DEMÁS proveedores de la misma línea, auto-excluido). A
+   diferencia de porcentaje_exito_historico/productos_distintos_historico,
+   estas dos no necesitan ventana point-in-time: todas las ofertas de una
+   misma línea se presentan dentro de la misma ventana de apertura del
+   cartel, no se extienden meses o años como el historial de un proveedor,
+   así que no hay el mismo riesgo de fuga de información hacia el futuro.
+ 
+7. Indicadores agregados para el modelo de ML: dim_instituciones y
    dim_proveedores ahora dependen de las tablas de hechos (cuántos
    proveedores distintos adjudicó cada institución, el % de éxito de cada
-   proveedor, cuántos productos distintos ha ofertado). 
-   Orden de construcción: primero las tablas de hechos, y dim_instituciones
+   proveedor, cuántos productos distintos ha ofertado) -- por eso el orden
+   de construcción cambió: primero las tablas de hechos, y dim_instituciones
    / dim_proveedores al final, leyendo de esas tablas ya construidas.
    fact_lineas_ofertas también gana un radio_competitividad (monto del
    cartel / monto ofertado, ambos en colones) que requiere que
@@ -269,6 +281,14 @@ def construir(con) -> None:
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY o.nro_oferta, lo.nro_linea ORDER BY lo.periodo DESC
             ) = 1
+        ),
+        competencia_linea AS (
+            -- Cuántos proveedores distintos ofertaron en cada línea -- es
+            -- una propiedad de la línea, no de la oferta individual: todas
+            -- las ofertas de esa línea comparten el mismo valor.
+            SELECT nro_sicop, nro_linea, COUNT(DISTINCT cedula_proveedor) AS intensidad_competencia
+            FROM base
+            GROUP BY nro_sicop, nro_linea
         )
         SELECT
             b.*,
@@ -277,10 +297,29 @@ def construir(con) -> None:
             -- proveedor (b.monto_linea_oferta), ambos ya en colones. < 1 significa
             -- que la oferta fue más barata que lo estimado por la
             -- institución; NULLIF evita dividir entre cero.
-            c.monto_linea_cartel / NULLIF(b.monto_linea_oferta, 0) AS radio_competitividad
+            c.monto_linea_cartel / NULLIF(b.monto_linea_oferta, 0) AS radio_competitividad,
+
+            cl.intensidad_competencia,
+
+            -- Precio unitario de la oferta contra la mediana de precio
+            -- unitario de los demás proveedores en la misma línea (se
+            -- excluye explícitamente al propio proveedor con
+            -- cedula_proveedor <> b.cedula_proveedor, para no comparar una
+            -- oferta contra sí misma si presentó más de una oferta
+            -- alternativa en la misma línea). NULL cuando nadie más ofertó
+            -- en esa línea -- no hay competidor contra quién comparar.
+            (b.monto_linea / NULLIF(b.cantidad_ofertada, 0)) / NULLIF((
+                SELECT median(b2.monto_linea / NULLIF(b2.cantidad_ofertada, 0))
+                FROM base b2
+                WHERE b2.nro_sicop = b.nro_sicop AND b2.nro_linea = b.nro_linea
+                  AND b2.cedula_proveedor <> b.cedula_proveedor
+            ), 0) AS precio_relativo_competidores
+
         FROM base b
         LEFT JOIN final.fact_lineas_carteles c
             ON c.nro_sicop = b.nro_sicop AND c.numero_linea = b.nro_linea
+        LEFT JOIN competencia_linea cl
+            ON cl.nro_sicop = b.nro_sicop AND cl.nro_linea = b.nro_linea
     """)
  
     con.execute("""
