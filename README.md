@@ -37,6 +37,7 @@ Modelo_predictivo_SICOP/
 │   ├── raw/                           # CSVs descargados (por mes)
 │   ├── staging/                       # Archivos Parquet (por mes)
 │   └── sicop.duckdb                   # Base de datos DuckDB
+├── Evaluacion_modelo.ipynb            # Cuaderno de Jupyter con el ajuste de hiperparámetros y evaluación del modelo.
 ├── requirements.txt                   # Dependencias de Python
 ├── .gitignore                         # Ignora *.duckdb, .venv, etc.
 └── README.md                          # Este archivo
