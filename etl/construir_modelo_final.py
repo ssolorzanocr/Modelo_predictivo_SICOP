@@ -387,20 +387,40 @@ def construir(con) -> None:
             FROM staging.dim_proveedores
             QUALIFY ROW_NUMBER() OVER (PARTITION BY cedula_proveedor ORDER BY periodo DESC) = 1
         ),
-        ofertas_por_proveedor AS (
-            -- Ofertas presentadas (a nivel de oferta, no de línea) y
-            -- productos distintos ofertados, en todo el histórico.
+        ofertas_presentadas AS (
+            -- Universo del denominador: una fila por (proveedor, oferta), a nivel
+            -- de oferta y no de línea. Solo incluye ofertas con detalle de líneas
+            -- (así se construye fact_lineas_ofertas) y presentadas dentro del
+            -- histórico cargado.
+            SELECT DISTINCT cedula_proveedor, nro_oferta
+            FROM final.fact_lineas_ofertas
+        ),
+        ofertas_adjudicadas AS (
+            -- (proveedor, oferta) con al menos una línea adjudicada.
+            SELECT DISTINCT cedula_proveedor, nro_oferta
+            FROM final.fact_lineas_adjudicadas
+        ),
+        exito_por_proveedor AS (
+            -- El numerador se cuenta DENTRO del universo de ofertas presentadas:
+            -- COUNT(g.nro_oferta) solo suma cuando el LEFT JOIN encontró pareja,
+            -- así que ofertas_ganadas <= ofertas_presentadas por construcción.
+            -- Las adjudicaciones sin oferta correspondiente en fact_lineas_ofertas
+            -- (por ejemplo, ofertas anteriores al inicio del histórico) quedan
+            -- fuera del cálculo en vez de inflar el numerador.
+            SELECT p.cedula_proveedor,
+                   COUNT(*) AS ofertas_presentadas,
+                   COUNT(g.nro_oferta) AS ofertas_ganadas
+            FROM ofertas_presentadas p
+            LEFT JOIN ofertas_adjudicadas g
+                ON g.cedula_proveedor = p.cedula_proveedor
+               AND g.nro_oferta = p.nro_oferta
+            GROUP BY p.cedula_proveedor
+        ),
+        productos_por_proveedor AS (
+            -- Productos distintos ofertados, en todo el histórico.
             SELECT cedula_proveedor,
-                   COUNT(DISTINCT nro_oferta) AS ofertas_presentadas,
                    COUNT(DISTINCT cod_producto) AS productos_distintos_ofertados
             FROM final.fact_lineas_ofertas
-            GROUP BY cedula_proveedor
-        ),
-        ofertas_ganadas_por_proveedor AS (
-            -- Una oferta cuenta como "ganada" si al menos una de sus líneas
-            -- terminó adjudicada a ese mismo proveedor.
-            SELECT cedula_proveedor, COUNT(DISTINCT nro_oferta) AS ofertas_ganadas
-            FROM final.fact_lineas_adjudicadas
             GROUP BY cedula_proveedor
         )
         SELECT
@@ -411,20 +431,12 @@ def construir(con) -> None:
             b.zona_geo_prov,
             fecha_flexible(b.fecha_registro) AS fecha_registro,
 
-            COALESCE(g.ofertas_ganadas, 0) / NULLIF(o.ofertas_presentadas, 0) AS porcentaje_exito,
-            COALESCE(o.productos_distintos_ofertados, 0) AS productos_distintos_ofertados
-            -- Promedio sobre TODO el histórico -- útil para dashboards/BI,
-            -- pero NO se usa como variable del modelo de ML: modelo/
-            -- entrena_y_predice.py calcula su propia versión
-            -- (porcentaje_exito_historico) respetando la fecha de cada
-            -- oferta, para no filtrar información del futuro hacia atrás.
-            -- Expresado como fracción (0 a 1), no como 0 a 100. NULL para
-            -- proveedores que nunca presentaron una oferta (no 0: el éxito
-            -- no está definido si no hay ofertas de por medio).
+            COALESCE(e.ofertas_ganadas, 0) / NULLIF(e.ofertas_presentadas, 0) AS porcentaje_exito,
+            COALESCE(pp.productos_distintos_ofertados, 0) AS productos_distintos_ofertados
         FROM base b
-        LEFT JOIN ofertas_por_proveedor o ON o.cedula_proveedor = b.cedula_proveedor
-        LEFT JOIN ofertas_ganadas_por_proveedor g ON g.cedula_proveedor = b.cedula_proveedor
-    """)
+        LEFT JOIN exito_por_proveedor e ON e.cedula_proveedor = b.cedula_proveedor
+        LEFT JOIN productos_por_proveedor pp ON pp.cedula_proveedor = b.cedula_proveedor
+        """)
  
     print(
         "esquema final reconstruido: dim_productos, fact_lineas_carteles, "
