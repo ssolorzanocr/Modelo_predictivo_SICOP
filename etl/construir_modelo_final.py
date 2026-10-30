@@ -388,10 +388,9 @@ def construir(con) -> None:
             QUALIFY ROW_NUMBER() OVER (PARTITION BY cedula_proveedor ORDER BY periodo DESC) = 1
         ),
         ofertas_presentadas AS (
-            -- Universo del denominador: una fila por (proveedor, oferta), a nivel
-            -- de oferta y no de línea. Solo incluye ofertas con detalle de líneas
-            -- (así se construye fact_lineas_ofertas) y presentadas dentro del
-            -- histórico cargado.
+            -- Universo del denominador: una fila por (proveedor, oferta). Solo
+            -- incluye ofertas con detalle de líneas, porque se construye desde
+            -- fact_lineas_ofertas.
             SELECT DISTINCT cedula_proveedor, nro_oferta
             FROM final.fact_lineas_ofertas
         ),
@@ -402,11 +401,11 @@ def construir(con) -> None:
         ),
         exito_por_proveedor AS (
             -- El numerador se cuenta DENTRO del universo de ofertas presentadas:
-            -- COUNT(g.nro_oferta) solo suma cuando el LEFT JOIN encontró pareja,
+            -- COUNT(g.nro_oferta) solo suma cuando el LEFT JOIN encuentra pareja,
             -- así que ofertas_ganadas <= ofertas_presentadas por construcción.
-            -- Las adjudicaciones sin oferta correspondiente en fact_lineas_ofertas
-            -- (por ejemplo, ofertas anteriores al inicio del histórico) quedan
-            -- fuera del cálculo en vez de inflar el numerador.
+            -- Las adjudicaciones cuya oferta no está en fact_lineas_ofertas
+            -- (por ejemplo, ofertas anteriores al histórico cargado) quedan fuera del numerador.
+
             SELECT p.cedula_proveedor,
                    COUNT(*) AS ofertas_presentadas,
                    COUNT(g.nro_oferta) AS ofertas_ganadas
@@ -417,7 +416,6 @@ def construir(con) -> None:
             GROUP BY p.cedula_proveedor
         ),
         productos_por_proveedor AS (
-            -- Productos distintos ofertados, en todo el histórico.
             SELECT cedula_proveedor,
                    COUNT(DISTINCT cod_producto) AS productos_distintos_ofertados
             FROM final.fact_lineas_ofertas
@@ -430,13 +428,23 @@ def construir(con) -> None:
             b.tamano_proveedor,
             b.zona_geo_prov,
             fecha_flexible(b.fecha_registro) AS fecha_registro,
+            -- Conteos sobre TODO el histórico (0 si el proveedor nunca presentó una oferta con líneas).
 
-            COALESCE(e.ofertas_ganadas, 0) / NULLIF(e.ofertas_presentadas, 0) AS porcentaje_exito,
+            COALESCE(e.ofertas_presentadas, 0) AS ofertas_presentadas,
+            COALESCE(e.ofertas_ganadas, 0) AS ofertas_ganadas,
+            -- Fracción (0 a 1), no 0 a 100. NULL cuando no hay ofertas presentadas
+            -- (no 0: el éxito no está definido sin ofertas de por medio).
+            -- Útil para dashboards/BI; NO es variable del modelo de ML:
+            -- modelo/entrena_y_predice.py usa porcentaje_exito_historico,
+            -- que respeta la fecha de cada oferta para no filtrar información
+            -- del futuro hacia atrás.
+
+            e.ofertas_ganadas / e.ofertas_presentadas AS porcentaje_exito,
             COALESCE(pp.productos_distintos_ofertados, 0) AS productos_distintos_ofertados
         FROM base b
         LEFT JOIN exito_por_proveedor e ON e.cedula_proveedor = b.cedula_proveedor
         LEFT JOIN productos_por_proveedor pp ON pp.cedula_proveedor = b.cedula_proveedor
-        """)
+    """)
  
     print(
         "esquema final reconstruido: dim_productos, fact_lineas_carteles, "
