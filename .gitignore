@@ -11,3 +11,5 @@ local_notebooks/
 #compiled Python files
 modelo/__pychache__/
 *.pyc
+#archivo de configuración de Streamlit
+echo ".streamlit/secrets.toml"
