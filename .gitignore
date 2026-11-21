@@ -2,7 +2,7 @@
 .venv/
 # Environment variables
 .env
-# Bases de datos locales
+# local databases
 *.duckdb
 localdata/
 #local notebooks
